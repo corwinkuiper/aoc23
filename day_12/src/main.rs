@@ -1,9 +1,9 @@
-use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 static INPUT: &str = include_str!("input.txt");
 
+#[cfg(test)]
 static TEST_INPUT: &str = "???.### 1,1,3
 .??..??...?##. 1,1,3
 ?#?#?#?#?#?#?#? 1,3,1,6
@@ -11,7 +11,7 @@ static TEST_INPUT: &str = "???.### 1,1,3
 ????.######..#####. 1,6,5
 ?###???????? 3,2,1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SpringCondition {
     Operational,
     Damaged,
@@ -34,35 +34,7 @@ impl TryFrom<char> for SpringCondition {
 #[derive(Clone, Debug)]
 struct Springs {
     condition: Vec<SpringCondition>,
-    damaged_springs: Vec<DamagedSprings>,
-}
-
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-struct DamagedSprings {
-    impossible_if_reached: usize,
-    number_of_damaged_springs: u32,
-}
-
-impl DamagedSprings {
-    fn make_list_of(consecutive_damaged_springs: &[u32], length: usize) -> Vec<DamagedSprings> {
-        let mut c: Vec<_> = consecutive_damaged_springs
-            .iter()
-            .copied()
-            .map(|x| DamagedSprings {
-                number_of_damaged_springs: x,
-                impossible_if_reached: usize::MAX,
-            })
-            .collect();
-        let mut impossible_position = length;
-
-        for ds in c.iter_mut().rev() {
-            ds.impossible_if_reached = impossible_position;
-            impossible_position -= ds.number_of_damaged_springs as usize;
-            impossible_position -= 1;
-        }
-
-        c
-    }
+    damaged_springs: Vec<u32>,
 }
 
 impl FromStr for Springs {
@@ -80,128 +52,88 @@ impl FromStr for Springs {
             .collect();
 
         let condition = condition?;
-        let damaged_springs = DamagedSprings::make_list_of(&damaged_springs?, condition.len());
 
         Ok(Self {
             condition,
-            damaged_springs,
+            damaged_springs: damaged_springs?,
         })
     }
 }
 
-#[derive(Debug, Clone)]
-struct SpringChecker<'a> {
-    damaged_spring_groups: core::iter::Peekable<core::slice::Iter<'a, DamagedSprings>>,
+fn apply<'a>(
+    mut params: RecurseParams<'a>,
+    spring_condition: SpringCondition,
+    cache: &mut HashMap<RecurseParams<'a>, u64>,
+) -> u64 {
+    match spring_condition {
+        SpringCondition::Operational => {
+            if params.current_damaged_group_length != 0 {
+                let Some(&expected_group_length) = params.remaining_groups.first() else {
+                    return 0;
+                };
+                if expected_group_length != params.current_damaged_group_length {
+                    return 0;
+                }
+                params.current_damaged_group_length = 0;
+                params.remaining_groups = &params.remaining_groups[1..];
+            }
+        }
+        SpringCondition::Damaged => params.current_damaged_group_length += 1,
+        SpringCondition::Unknown => panic!("can't apply unknown"),
+    }
+
+    recurse_check(params, cache)
+}
+
+#[derive(PartialEq, Eq, Hash, Debug, Clone, Copy)]
+struct RecurseParams<'a> {
+    remaining: &'a [SpringCondition],
+    remaining_groups: &'a [u32],
     current_damaged_group_length: u32,
-    index: usize,
 }
 
-impl<'a> SpringChecker<'a> {
-    fn new(spring_groups: &'a [DamagedSprings]) -> Self {
-        Self {
-            damaged_spring_groups: spring_groups.iter().peekable(),
-            current_damaged_group_length: 0,
-            index: 0,
-        }
-    }
+fn recurse_check_inner<'a>(
+    mut params: RecurseParams<'a>,
+    cache: &mut HashMap<RecurseParams<'a>, u64>,
+) -> u64 {
+    if let Some(next) = params.remaining.get(0) {
+        params.remaining = &params.remaining[1..];
 
-    fn give(&mut self, c: SpringCondition) -> bool {
-        assert_ne!(c, SpringCondition::Unknown);
-
-        let &DamagedSprings {
-            impossible_if_reached,
-            number_of_damaged_springs,
-        } = self
-            .damaged_spring_groups
-            .peek()
-            .copied()
-            .unwrap_or(&DamagedSprings {
-                impossible_if_reached: usize::MAX,
-                number_of_damaged_springs: 0,
-            });
-
-        if self.index > impossible_if_reached {
-            return false;
-        }
-
-        self.index += 1;
-
-        match c {
-            SpringCondition::Operational => {
-                if self.current_damaged_group_length != 0 {
-                    if self.current_damaged_group_length != number_of_damaged_springs {
-                        return false;
-                    }
-                    self.damaged_spring_groups.next();
-                    self.current_damaged_group_length = 0;
-                }
+        match *next {
+            normal @ (SpringCondition::Operational | SpringCondition::Damaged) => {
+                apply(params, normal, cache)
             }
-            SpringCondition::Damaged => {
-                self.current_damaged_group_length += 1;
-                if self.current_damaged_group_length > number_of_damaged_springs {
-                    return false;
-                }
+            SpringCondition::Unknown => {
+                apply(params, SpringCondition::Damaged, cache)
+                    + apply(params, SpringCondition::Operational, cache)
             }
-            SpringCondition::Unknown => panic!("can't hand give an unknown spring"),
         }
-
-        true
-    }
-
-    fn complete(&mut self) -> bool {
-        self.give(SpringCondition::Operational) && self.damaged_spring_groups.next().is_none()
+    } else if params.current_damaged_group_length != 0 && params.remaining_groups.len() == 1 {
+        let &expected_length = params.remaining_groups.last().unwrap();
+        if expected_length == params.current_damaged_group_length {
+            1
+        } else {
+            0
+        }
+    } else if params.current_damaged_group_length == 0 && params.remaining_groups.is_empty() {
+        1
+    } else {
+        0
     }
 }
 
-#[derive(Clone, Debug)]
-struct SpringEnumerator<'a> {
-    checker: SpringChecker<'a>,
-    springs: core::slice::Iter<'a, SpringCondition>,
-}
-
-impl<'a> SpringEnumerator<'a> {
-    fn new(spring_groups: &'a [DamagedSprings], springs: &'a [SpringCondition]) -> Self {
-        Self {
-            checker: SpringChecker::new(spring_groups),
-            springs: springs.iter(),
-        }
+fn recurse_check<'a>(
+    params: RecurseParams<'a>,
+    cache: &mut HashMap<RecurseParams<'a>, u64>,
+) -> u64 {
+    if let Some(cached_value) = cache.get(&params).copied() {
+        return cached_value;
     }
 
-    fn count(&mut self) -> u64 {
-        match self.springs.next() {
-            Some(&spring @ (SpringCondition::Damaged | SpringCondition::Operational)) => {
-                if self.checker.give(spring) {
-                    self.count()
-                } else {
-                    0
-                }
-            }
-            None => {
-                if self.checker.complete() {
-                    1
-                } else {
-                    0
-                }
-            }
-            Some(SpringCondition::Unknown) => {
-                let mut operational = self.clone();
-                let damaged = self;
+    let calculated_value = recurse_check_inner(params, cache);
 
-                let dc = if damaged.checker.give(SpringCondition::Damaged) {
-                    damaged.count()
-                } else {
-                    0
-                };
-                let oc = if operational.checker.give(SpringCondition::Operational) {
-                    operational.count()
-                } else {
-                    0
-                };
-
-                dc + oc
-            }
-        }
-    }
+    cache.insert(params, calculated_value);
+    calculated_value
 }
 
 impl Springs {
@@ -216,22 +148,22 @@ impl Springs {
         self.condition.push(SpringCondition::Unknown);
         self.condition.append(&mut x.clone());
 
-        let b: Vec<_> = self
-            .damaged_springs
-            .iter()
-            .map(|x| x.number_of_damaged_springs)
-            .collect();
-        let mut c = b.clone();
-        c.append(&mut b.clone());
-        c.append(&mut b.clone());
-        c.append(&mut b.clone());
-        c.append(&mut b.clone());
-        self.damaged_springs = DamagedSprings::make_list_of(&c, self.condition.len());
+        let b: Vec<_> = self.damaged_springs.clone();
+        self.damaged_springs.append(&mut b.clone());
+        self.damaged_springs.append(&mut b.clone());
+        self.damaged_springs.append(&mut b.clone());
+        self.damaged_springs.append(&mut b.clone());
     }
 
-    fn count_possible_solutions(&self) -> u64 {
-        let mut checker = SpringEnumerator::new(&self.damaged_springs, &self.condition);
-        checker.count()
+    fn count(&self) -> u64 {
+        recurse_check(
+            RecurseParams {
+                remaining: &self.condition,
+                remaining_groups: &self.damaged_springs,
+                current_damaged_group_length: 0,
+            },
+            &mut HashMap::new(),
+        )
     }
 }
 
@@ -239,11 +171,7 @@ fn first_task(input: &str) -> u64 {
     let puzzles: Result<Vec<Springs>, _> = input.lines().map(|x| x.parse()).collect();
     let puzzles = puzzles.unwrap();
 
-    puzzles
-        .par_iter()
-        .map(|x| x.count_possible_solutions())
-        .progress_count(puzzles.len() as u64)
-        .sum()
+    puzzles.par_iter().map(Springs::count).sum()
 }
 
 fn second_task(input: &str) -> u64 {
@@ -252,11 +180,7 @@ fn second_task(input: &str) -> u64 {
 
     puzzles.iter_mut().for_each(|x| x.expand());
 
-    puzzles
-        .par_iter()
-        .map(|x| x.count_possible_solutions())
-        .progress_count(puzzles.len() as u64)
-        .sum()
+    puzzles.par_iter().map(Springs::count).sum()
 }
 
 #[test]
