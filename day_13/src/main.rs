@@ -1,3 +1,4 @@
+#[cfg(test)]
 static TEST_INPUT: &str = "#.##..##.
 ..#.##.#.
 ##......#
