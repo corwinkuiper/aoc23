@@ -1,4 +1,6 @@
 static INPUT: &str = include_str!("input.txt");
+
+#[cfg(test)]
 static TEST_INPUT: &str = "rn=1,cm-,qp=3,cm=2,qp-,pc=4,ot=9,ab=5,pc-,pc=6,ot=7";
 
 fn hash_bytes(b: &[u8]) -> u8 {
@@ -16,7 +18,7 @@ fn first_task(input: &str) -> u64 {
                 .copied()
                 .fold(0u8, |acc, b| acc.wrapping_add(b).wrapping_mul(17))
         })
-        .map(|x| Into::<u64>::into(x))
+        .map(Into::<u64>::into)
         .sum()
 }
 
@@ -63,26 +65,18 @@ fn second_task(input: &str) -> u64 {
         let v = &mut map[hash];
 
         match operation {
-            Operation::Add(focal_length) => {
-                match v.iter_mut().filter(|x| x.label == label).next() {
-                    Some(lens) => lens.focal_length = focal_length,
-                    None => v.push(Lens {
-                        label,
-                        focal_length,
-                    }),
-                }
-            }
-            Operation::Remove => match v
-                .iter_mut()
-                .enumerate()
-                .filter(|(_, x)| x.label == label)
-                .next()
-            {
-                Some((idx, _)) => {
+            Operation::Add(focal_length) => match v.iter_mut().find(|x| x.label == label) {
+                Some(lens) => lens.focal_length = focal_length,
+                None => v.push(Lens {
+                    label,
+                    focal_length,
+                }),
+            },
+            Operation::Remove => {
+                if let Some(idx) = v.iter_mut().position(|x| x.label == label) {
                     v.remove(idx);
                 }
-                None => {}
-            },
+            }
         }
     }
 
